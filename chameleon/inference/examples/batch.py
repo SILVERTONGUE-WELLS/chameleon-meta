@@ -8,10 +8,10 @@ from chameleon.inference.chameleon import ChameleonInferenceModel
 
 def main():
     model = ChameleonInferenceModel(
-        "./data/models/7b/",
-        "./data/tokenizer/text_tokenizer.json",
-        "./data/tokenizer/vqgan.yaml",
-        "./data/tokenizer/vqgan.ckpt",
+        "/workspace/chameleon-meta/data/models/7b/",
+        "/workspace/chameleon-meta/data/tokenizer/text_tokenizer.json",
+        "/workspace/chameleon-meta/data/tokenizer/vqgan.yaml",
+        "/workspace/chameleon-meta/data/tokenizer/vqgan.ckpt",
     )
 
     batch_tokens = model.generate(batch_prompt_text=["All your base", "import asyncio"])

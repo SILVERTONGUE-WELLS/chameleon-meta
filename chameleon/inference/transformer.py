@@ -6,6 +6,7 @@
 from dataclasses import dataclass
 
 import torch
+import math
 from torch import distributed as dist
 from torch import nn
 from torch.nn import functional as F
@@ -143,15 +144,36 @@ class Attention(nn.Module):
         # Handle GQA
         # Q shape: [B, M, Hkv, Hq // Hkv, K]
         heads_per_group = self.n_local_heads // self.n_local_kv_heads
-        cache_k = cache_k.unsqueeze(3).expand(-1, -1, -1, heads_per_group, -1)
+        cache_k = cache_k.unsqueeze(3).expand(-1, -1, -1, heads_per_group, -1) 
         cache_v = cache_v.unsqueeze(3).expand(-1, -1, -1, heads_per_group, -1)
         xq = xq.reshape(
-            [*xq.shape[:2], self.n_local_kv_heads, heads_per_group, xq.shape[-1]]
+            [*xq.shape[:2], self.n_local_kv_heads, heads_per_group, xq.shape[-1]] # [1, seq_len, n_local_kv_heads, heads_per_group, head_dim]
         )
         
-        # Calculate attention scores
-        
-
+        # Support the output of attention weights
+        attn_weights = None
+        if output_attention:
+            # Calculate attention scores
+            q_scaled = xq / math.sqrt(self.head_dim) 
+            B, N_q, Hkv, hpg, D = q_scaled.shape #hpg = heads_per_group
+            N_k = cache_k.shape[1]
+            q_for_attn = q_scaled.permute(0, 2, 1, 3, 4).contiguous().view(B * Hkv, hpg * N_q, D)
+            k_for_attn = cache_k.view(B * Hkv, N_k, D)
+            scores = torch.bmm(q_for_attn, k_for_attn.transpose(-1, -2)) 
+            scores = scores.view(B, Hkv, hpg, N_q, N_k)
+            if attn_bias is not None:
+                # TODO: let's first assume attn_bias shape: [B, Hkv, hpg, N_q, N_k]
+                bias_expanded = attn_bias.materialize(B, Hkv, hpg, N_q, N_k)
+                scores = scores + bias_expanded
+            attn_weights = torch.softmax(scores, dim=-1)
+            attn_weights = attn_weights.view(B, Hkv * hpg, N_q, N_k)
+            attn_weights = attn_weights.view(
+                    xq.shape[0],  # B
+                    self.n_local_heads,  # Hq = Hkv*hpg
+                    N_q, 
+                    N_k
+            )
+            
         # rope_padded() updated the caches, so we
         # call attention directly
         output = fmha.memory_efficient_attention_forward(
@@ -162,6 +184,8 @@ class Attention(nn.Module):
         output = self.wo(output.reshape(output_shape))
         if self.model_parallel_size > 1:
             dist.all_reduce(output, group=group)
+        if output_attention:
+            return output, attn_weights
 
         return output
 
@@ -268,25 +292,46 @@ class TransformerBlock(nn.Module):
         cache: LayerCache,
         attn_bias: AttnBias,
         group: dist.ProcessGroup | None = None,
-    ) -> torch.Tensor:
+        output_attention: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if self.swin_norm:
-            h = x + self.attention_norm(
-                self.attention.forward(
+            if output_attention:
+                h, attn_weights = self.attention.forward(
                     x,
                     cache,
                     attn_bias,
                     group=group,
+                    output_attention=output_attention,
+                )
+            else:
+                h = x + self.attention_norm(
+                    self.attention.forward(
+                        x,
+                        cache,
+                        attn_bias,
+                        group=group,
                 )
             )
             out = h + self.ffn_norm(self.feed_forward(h, group=group))
         else:
-            h = x + self.attention.forward(
-                self.attention_norm(x),
-                cache,
-                attn_bias,
-                group=group,
-            )
+            if output_attention:
+                h, attn_weights = self.attention.forward(
+                    self.attention_norm(x),
+                    cache,
+                    attn_bias,
+                    group=group,
+                    output_attention=output_attention,
+                )
+            else:
+                h = x + self.attention.forward(
+                    self.attention_norm(x),
+                    cache,
+                    attn_bias,
+                    group=group,
+                )
             out = h + self.feed_forward(self.ffn_norm(h), group=group)
+        if output_attention:
+            return out, attn_weights
         return out
 
 
@@ -324,21 +369,31 @@ class Transformer(nn.Module):
         attn_bias: AttnBias,
         cache: list[LayerCache],
         group: dist.ProcessGroup | None = None,
-    ) -> torch.Tensor:
+        output_attention: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         h = self.tok_embeddings(token_values)
         if self.model_parallel_size > 1:
             gather = [torch.empty_like(h) for _ in range(self.model_parallel_size)]
             dist.all_gather(gather, h, group=group)
             h = torch.cat(gather, dim=-1)
+            
+        if output_attention:
+            attn_weights = []
 
         for i, layer in enumerate(self.layers):
-            h = layer(h, cache[i], attn_bias, group=group)
+            if output_attention:
+                h, attn_weights = layer(h, cache[i], attn_bias, group=group, output_attention=output_attention)
+            else:
+                h = layer(h, cache[i], attn_bias, group=group)
 
         logits = self.output(self.norm(h))
         if self.model_parallel_size > 1:
             gather = [torch.empty_like(logits) for _ in range(self.model_parallel_size)]
             dist.all_gather(gather, logits, group=group)
             logits = torch.cat(gather, dim=-1)
+
+        if output_attention:
+            return logits, attn_weights
         return logits.float()
 
     def forward(
