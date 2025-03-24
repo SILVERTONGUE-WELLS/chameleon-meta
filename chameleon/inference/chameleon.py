@@ -141,7 +141,7 @@ class TokenManager:
         return self.tokenize_image(PIL.Image.open(image_file))
 
     def tokens_from_ui(self, inputs: list[dict]) -> list[int]:
-        tokens = [self.vocab.bos_id]
+        tokens = [self.vocab.bos_id] # 添加开始标记
         for input_ in inputs:
             if input_["type"] == "text":
                 tokens += self.tokenize_text(input_["value"])

@@ -113,6 +113,6 @@ class ChameleonModelAdapter(ModelAdapter):
                 attn_bias=self._bias,
                 cache=self._cache,
             )
-
         self._bias.k_seqinfo.seqlen.add_(1)
         return self._local_outputs.view(batch_size, -1, self._vocab_size)
+

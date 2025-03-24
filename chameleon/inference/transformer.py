@@ -100,6 +100,7 @@ class Attention(nn.Module):
         cache: LayerCache,
         attn_bias: AttnBias,
         group: dist.ProcessGroup | None = None,
+        output_attention: bool = False,
     ) -> torch.Tensor:
         # x.shape is (sum(seq_lens), dim)
         #
@@ -147,12 +148,16 @@ class Attention(nn.Module):
         xq = xq.reshape(
             [*xq.shape[:2], self.n_local_kv_heads, heads_per_group, xq.shape[-1]]
         )
+        
+        # Calculate attention scores
+        
 
         # rope_padded() updated the caches, so we
         # call attention directly
         output = fmha.memory_efficient_attention_forward(
             xq, cache_k, cache_v, attn_bias
         )
+        
 
         output = self.wo(output.reshape(output_shape))
         if self.model_parallel_size > 1:
