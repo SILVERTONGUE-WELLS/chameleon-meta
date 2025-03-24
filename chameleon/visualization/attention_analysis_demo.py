@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--vqgan-cfg", help="Path to VQGAN config", default="/workspace/chameleon-meta/data/tokenizer/vqgan.yaml")
     parser.add_argument("--vqgan-ckpt", help="Path to VQGAN checkpoint", default="/workspace/chameleon-meta/data/tokenizer/vqgan.ckpt")
     parser.add_argument("--text-prompt", help="Text prompt", default="What is the image about, you have to notice the details of the image?")
-    parser.add_argument("--image-path", help="file:/workspace/chameleon-meta/data/images/geode-de-celestite-madagascar.jpg")
+    parser.add_argument("--image-path", help="Path to image file", default="file:/workspace/chameleon-meta/data/images/geode-de-celestite-madagascar.jpg")
     parser.add_argument("--output-dir", default="attention_analysis", help="Output directory")
     parser.add_argument("--pool-size", type=int, default=1, help="Pooling size for visualization")
     
@@ -52,12 +52,13 @@ def main():
         inputs.append({"type": "text", "value": args.text_prompt})
     
     if args.image_path:
-        print(f"Loading image from: {args.image_path}")
-        if os.path.exists(args.image_path):
-            img = Image.open(args.image_path).convert("RGB")
-            inputs.append({"type": "image", "value": img})
+        image_path = args.image_path.split(":")[1]
+        print(f"Loading image from: {image_path}")
+        if os.path.exists(image_path):
+            # img = Image.open(image_path).convert("RGB")
+            inputs.append({"type": "image", "value": args.image_path})
         else:
-            raise ValueError(f"Image file not found: {args.image_path}")
+            raise ValueError(f"Image file not found: {image_path}")
     
     # Add end-of-turn sentinel
     inputs.append({"type": "sentinel", "value": "<END-OF-TURN>"})
@@ -65,6 +66,7 @@ def main():
     # Generate with attention collection
     print("Running model inference and collecting attention...")
     output_ids, attention_data = model.generate_with_attention(prompt_ui=inputs)
+    
     
     # Get input sequence for reference
     input_sequence = model.token_manager.tokens_from_ui(inputs)

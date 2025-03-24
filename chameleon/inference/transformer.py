@@ -15,6 +15,7 @@ from xformers.ops.fmha.attn_bias import (
     BlockDiagonalCausalWithOffsetPaddedKeysMask as AttnBias,
 )
 
+attention_weights = []
 
 @dataclass
 class ModelArgs:
@@ -165,7 +166,7 @@ class Attention(nn.Module):
                 # Convert attn_bias to the appropriate shape, TODO: check the shape
                 bias_expanded = attn_bias.materialize((B * Hkv * hpg, N_q, N_k))
                 bias_expanded = bias_expanded.view(B, Hkv, hpg, N_q, N_k)
-                scores = scores + bias_expanded
+                scores = scores + bias_expanded.to(scores.device)
             attn_weights = torch.softmax(scores, dim=-1)
             attn_weights = attn_weights.view(B, Hkv * hpg, N_q, N_k)
             attn_weights = attn_weights.view(
@@ -371,15 +372,16 @@ class Transformer(nn.Module):
         attn_bias: AttnBias,
         cache: list[LayerCache],
         group: dist.ProcessGroup | None = None,
-        output_attention: bool = False,
+        output_attention: bool = True,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         h = self.tok_embeddings(token_values)
         if self.model_parallel_size > 1:
             gather = [torch.empty_like(h) for _ in range(self.model_parallel_size)]
             dist.all_gather(gather, h, group=group)
             h = torch.cat(gather, dim=-1)
-            
-        all_attn_weights = [] if output_attention else None
+
+        global attention_weights
+        attention_weights.clear()
 
         for i, layer in enumerate(self.layers):
             if output_attention:
@@ -391,7 +393,7 @@ class Transformer(nn.Module):
                     output_attention=output_attention
                 )
                 h = h_out
-                all_attn_weights.append(layer_attn_weights)
+                attention_weights.append(layer_attn_weights)
             else:
                 h = layer(h, cache[i], attn_bias, group=group)
 
@@ -401,8 +403,6 @@ class Transformer(nn.Module):
             dist.all_gather(gather, logits, group=group)
             logits = torch.cat(gather, dim=-1)
 
-        if output_attention:
-            return logits, all_attn_weights
         return logits.float()
 
     def forward(

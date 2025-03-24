@@ -8,15 +8,15 @@ from chameleon.inference.chameleon import ChameleonInferenceModel
 
 def main():
     model = ChameleonInferenceModel(
-        "./data/models/7b/",
-        "./data/tokenizer/text_tokenizer.json",
-        "./data/tokenizer/vqgan.yaml",
-        "./data/tokenizer/vqgan.ckpt",
+        "/workspace/chameleon-meta/data/models/7b/",
+        "/workspace/chameleon-meta/data/tokenizer/text_tokenizer.json",
+        "/workspace/chameleon-meta/data/tokenizer/vqgan.yaml",
+        "/workspace/chameleon-meta/data/tokenizer/vqgan.ckpt",
     )
 
     tokens = model.generate(
         prompt_ui=[
-            {"type": "image", "value": "file:/path/to/image.jpeg"},
+            {"type": "image", "value": "file:/workspace/chameleon-meta/data/images/geode-de-celestite-madagascar.jpg"},
             {"type": "text", "value": "What do you see?"},
             {"type": "sentinel", "value": "<END-OF-TURN>"},
         ]
