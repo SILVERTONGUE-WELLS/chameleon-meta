@@ -47,9 +47,10 @@ from chameleon.inference.token_selector import (
     MultinomialTokenSelector,
     ReplicatedInputTokenSelector,
 )
-from chameleon.inference.transformer import Transformer
+from chameleon.inference.transformer import Transformer, make_cache
 from chameleon.inference.utils import DynamicGenerator, advance, random_unused_port
 from chameleon.inference.vocab import VocabInfo, VocabTranslation
+from xformers.ops.fmha.attn_bias import BlockDiagonalCausalWithOffsetPaddedKeysMask as AttnBias
 
 
 @dataclass
@@ -505,26 +506,163 @@ def _worker_impl(
         options, input_ids, key, shutdown = req
         if shutdown:
             break
-
-        for token in Generator(
-            model=model,
-            vocab=vocab,
-            options=options,
-            input_ids=input_ids,
-        ):
+            
+        # Check if this is an attention collection request
+        if hasattr(options, "collect_attention") and options.collect_attention:
             if is_coord:
-                dctx.res_q.put((key, token))
+                attention_data = _collect_attention_data(
+                    model=model,
+                    full_sequence=options.target_sequence,
+                    prompt_length=options.prompt_length,
+                    vocab=vocab
+                )
+                dctx.res_q.put((key, attention_data))
+        else:
+            # Normal generation
+            for token in Generator(
+                model=model,
+                vocab=vocab,
+                options=options,
+                input_ids=input_ids,
+            ):
+                if is_coord:
+                    dctx.res_q.put((key, token))
 
-            to_continue = [True]
+                to_continue = [True]
+                if is_coord:
+                    with dctx.active_key_lock:
+                        to_continue = [key in dctx.active_key]
+                dist.broadcast_object_list(to_continue, src=0)
+                if not to_continue[0]:
+                    break
+
             if is_coord:
-                with dctx.active_key_lock:
-                    to_continue = [key in dctx.active_key]
-            dist.broadcast_object_list(to_continue, src=0)
-            if not to_continue[0]:
-                break
+                dctx.res_q.put((key, None))
+                
+def _collect_attention_data(model: Transformer, full_sequence: list[int], prompt_length: int, vocab: VocabInfo) -> list[dict]:
+    """
+    Collect attention data for a sequence by running a forward pass with attention output.
+    
+    Args:
+        model: The Transformer model
+        full_sequence: List of token IDs (input + output)
+        prompt_length: Length of the input prompt
+        vocab: Vocabulary information
+        
+    Returns:
+        List of dictionaries with attention weights for each layer
+    """
+    # Convert to tensor and ensure it's a batch
+    input_tensor = torch.tensor([full_sequence], dtype=torch.long).to(next(model.parameters()).device)
+    
+    # Ensure sequence is not empty
+    if len(full_sequence) == 0:
+        print("Warning: Empty sequence provided to attention analysis")
+        return []
+    
+    # Create cache with proper size
+    seq_len = len(full_sequence)
+    try:
+        cache = make_cache(model.args, seq_len, device=next(model.parameters()).device)
+        
+        # Create attention bias - use only the actual sequence length
+        attn_bias = AttnBias.from_seqlens(
+            q_seqlen=[seq_len],
+            kv_seqlen=[seq_len],
+            kv_padding=seq_len + 50,  # No padding needed for analysis
+        )
+        
+        # Perform forward pass with attention output
+        print(f"Running attention analysis on sequence of length {seq_len}")
+        with torch.no_grad():
+            _, all_attention_weights = model.forward_with_attn_bias(
+                input_tensor, attn_bias, cache, output_attention=True
+            )
+        
+        # Process attention weights into serializable format
+        attention_data = []
+        for layer_idx, layer_weights in enumerate(all_attention_weights):
+            # Average across heads for simplicity
+            avg_weights = layer_weights.mean(dim=0).cpu()
+            
+            # Create layer data
+            layer_data = {
+                "layer": layer_idx,
+                "attention_shape": list(layer_weights.shape),
+                "attention_mean": float(avg_weights.mean().item()),
+                "attention_max": float(avg_weights.max().item()),
+                # Store 5 most important attention patterns
+                "top_patterns": _get_top_attention_patterns(avg_weights, full_sequence, prompt_length, vocab)
+            }
+            attention_data.append(layer_data)
+        
+        return attention_data
+    except Exception as e:
+        print(f"Error in attention analysis: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
-        if is_coord:
-            dctx.res_q.put((key, None))
+def _get_top_attention_patterns(attention_weights, tokens, prompt_length, vocab, k=5):
+    """
+    Extract top attention patterns between different token types.
+    
+    Args:
+        attention_weights: Averaged attention weights [seq_len, seq_len]
+        tokens: Token sequence
+        prompt_length: Length of prompt
+        vocab: Vocabulary information
+        k: Number of top patterns to extract
+        
+    Returns:
+        List of top attention patterns
+    """
+    # Identify token types
+    token_types = []
+    in_image = False
+    
+    for i, token_id in enumerate(tokens):
+        if i >= prompt_length:
+            token_types.append("output")
+        elif token_id == vocab.begin_image:
+            token_types.append("image_boundary")
+            in_image = True
+        elif token_id == vocab.end_image:
+            token_types.append("image_boundary")
+            in_image = False
+        elif in_image:
+            token_types.append("image")
+        elif token_id in [vocab.bos_id, vocab.eos_id, vocab.pad_id, vocab.eot_id]:
+            token_types.append("special")
+        else:
+            token_types.append("text")
+    
+    # Group indices by type
+    type_indices = {}
+    for t in set(token_types):
+        type_indices[t] = [i for i, token_type in enumerate(token_types) if token_type == t]
+    
+    # Compute cross-attention metrics
+    cross_attn = []
+    for src_type, src_indices in type_indices.items():
+        if not src_indices:
+            continue
+            
+        for tgt_type, tgt_indices in type_indices.items():
+            if not tgt_indices or src_type == tgt_type:
+                continue
+                
+            # Get attention from this type to that type
+            if len(src_indices) > 0 and len(tgt_indices) > 0:
+                avg_attn = attention_weights[src_indices][:, tgt_indices].mean().item()
+                cross_attn.append({
+                    "from": src_type,
+                    "to": tgt_type,
+                    "value": float(avg_attn)
+                })
+    
+    # Sort by value and return top k
+    return sorted(cross_attn, key=lambda x: x["value"], reverse=True)[:k]
 
 
 class ChameleonInferenceModel:
@@ -671,3 +809,153 @@ class ChameleonInferenceModel:
 
     def decode_image(self, ids: torch.LongTensor) -> list[PIL.Image]:
         return self.token_manager.decode_image(ids)
+
+    def generate_with_attention(
+        self,
+        *,
+        input_ids: list[int] | None = None,
+        prompt_text: str | None = None,
+        prompt_ui: list[dict] | None = None,
+        batch_input_ids: list[list[int]] | None = None,
+        batch_prompt_text: list[str] | None = None,
+        batch_prompt_ui: list[list[dict]] | None = None,
+        options: Options | None = None,
+    ) -> tuple[torch.LongTensor, list[dict]]:
+        """
+        Generate output tokens and collect attention weights for analysis.
+        
+        This method uses the same parameters as generate() but also returns
+        attention weights for visualization and analysis.
+        
+        Returns:
+            tuple: (output_ids, attention_data)
+                - output_ids: tensor of output token IDs
+                - attention_data: list of dictionaries with attention weights and metadata
+        """
+        # First, generate the output tokens
+        output_tokens = self.generate(
+            input_ids=input_ids,
+            prompt_text=prompt_text,
+            prompt_ui=prompt_ui,
+            batch_input_ids=batch_input_ids,
+            batch_prompt_text=batch_prompt_text,
+            batch_prompt_ui=batch_prompt_ui,
+            options=options,
+        )
+        
+        # Now, determine the input sequence used
+        try:
+            if prompt_text is not None:
+                input_sequence = self.token_manager.tokenize_text(prompt_text)
+            elif prompt_ui is not None:
+                input_sequence = self.token_manager.tokens_from_ui(prompt_ui)
+            elif input_ids is not None:
+                input_sequence = input_ids
+            elif batch_prompt_text is not None and len(batch_prompt_text) > 0:
+                input_sequence = self.token_manager.tokenize_text(batch_prompt_text[0])
+            elif batch_prompt_ui is not None and len(batch_prompt_ui) > 0:
+                input_sequence = self.token_manager.tokens_from_ui(batch_prompt_ui[0])
+            elif batch_input_ids is not None and len(batch_input_ids) > 0:
+                input_sequence = batch_input_ids[0]
+            else:
+                raise ValueError("No valid input provided")
+            
+            # Only proceed if we have output tokens
+            if output_tokens.numel() == 0:
+                print("Warning: No output tokens generated")
+                return output_tokens, []
+                
+            # Create the full sequence (input + output)
+            output_list = output_tokens.flatten().tolist()
+            
+            # Don't duplicate the input tokens if they're already in the output
+            if len(output_list) >= len(input_sequence) and output_list[:len(input_sequence)] == input_sequence:
+                full_sequence = output_list
+            else:
+                full_sequence = input_sequence + output_list[len(input_sequence):]
+            
+            # The prompt length is the length of the input sequence
+            prompt_length = len(input_sequence)
+                
+            # Limit sequence length if too long (to avoid memory issues)
+            max_analysis_length = 1024  # Set a reasonable limit for analysis
+            if len(full_sequence) > max_analysis_length:
+                print(f"Warning: Truncating sequence for attention analysis from {len(full_sequence)} to {max_analysis_length}")
+                # Preserve the beginning and end portions
+                keep_prompt = min(prompt_length, max_analysis_length // 2)
+                keep_output = max_analysis_length - keep_prompt
+                full_sequence = full_sequence[:keep_prompt] + full_sequence[-keep_output:]
+                prompt_length = keep_prompt
+            
+            # Request attention weights
+            attention_data = self._collect_attention_weights(
+                full_sequence, 
+                prompt_length=prompt_length
+            )
+            
+            return output_tokens, attention_data
+            
+        except Exception as e:
+            print(f"Error collecting attention data: {e}")
+            import traceback
+            traceback.print_exc()
+            return output_tokens, []
+    
+    def _collect_attention_weights(self, full_sequence: list[int], prompt_length: int) -> list[dict]:
+        """
+        Collect attention weights for a given sequence.
+        
+        Args:
+            full_sequence: List of token IDs (input + output)
+            prompt_length: Length of the input prompt
+            
+        Returns:
+            List of dictionaries with attention data for each layer
+        """
+        # We need to create a custom message to send to the worker to run
+        # a forward pass with output_attention=True
+        req_key = self.next_key
+        self.next_key += 1
+        
+        with self.dctx.active_key_lock:
+            self.dctx.active_key[req_key] = True
+            
+        # Custom request for attention collection
+        # We'll use a special flag in the options to signal attention collection
+        attention_options = Options()
+        if isinstance(self.options, Options):
+            # Copy options
+            for key, value in vars(self.options).items():
+                setattr(attention_options, key, value)
+        
+        # Set a special attribute to signal attention collection
+        setattr(attention_options, "collect_attention", True)
+        setattr(attention_options, "target_sequence", full_sequence)
+        setattr(attention_options, "prompt_length", prompt_length)
+        
+        try:
+            # Send the request
+            self.dctx.req_q.put([attention_options, [full_sequence], req_key, False])
+            
+            # Wait for response which should contain attention data
+            attention_data = None
+            while True:
+                response = self.dctx.res_q.get()
+                if response is None:
+                    break
+                    
+                key, data = response
+                if key != req_key:
+                    # Skip responses from other requests
+                    continue
+                    
+                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                    # This is our attention data
+                    attention_data = data
+                    break
+        finally:
+            with self.dctx.active_key_lock:
+                if req_key in self.dctx.active_key:
+                    del self.dctx.active_key[req_key]
+        
+        return attention_data or []

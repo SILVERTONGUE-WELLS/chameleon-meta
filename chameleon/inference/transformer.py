@@ -162,8 +162,9 @@ class Attention(nn.Module):
             scores = torch.bmm(q_for_attn, k_for_attn.transpose(-1, -2)) 
             scores = scores.view(B, Hkv, hpg, N_q, N_k)
             if attn_bias is not None:
-                # TODO: let's first assume attn_bias shape: [B, Hkv, hpg, N_q, N_k]
-                bias_expanded = attn_bias.materialize(B, Hkv, hpg, N_q, N_k)
+                # Convert attn_bias to the appropriate shape, TODO: check the shape
+                bias_expanded = attn_bias.materialize((B * Hkv * hpg, N_q, N_k))
+                bias_expanded = bias_expanded.view(B, Hkv, hpg, N_q, N_k)
                 scores = scores + bias_expanded
             attn_weights = torch.softmax(scores, dim=-1)
             attn_weights = attn_weights.view(B, Hkv * hpg, N_q, N_k)
@@ -303,6 +304,7 @@ class TransformerBlock(nn.Module):
                     group=group,
                     output_attention=output_attention,
                 )
+                h = x + self.attention_norm(h) # Add residual connection
             else:
                 h = x + self.attention_norm(
                     self.attention.forward(
@@ -310,8 +312,8 @@ class TransformerBlock(nn.Module):
                         cache,
                         attn_bias,
                         group=group,
+                    )
                 )
-            )
             out = h + self.ffn_norm(self.feed_forward(h, group=group))
         else:
             if output_attention:
@@ -370,19 +372,26 @@ class Transformer(nn.Module):
         cache: list[LayerCache],
         group: dist.ProcessGroup | None = None,
         output_attention: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         h = self.tok_embeddings(token_values)
         if self.model_parallel_size > 1:
             gather = [torch.empty_like(h) for _ in range(self.model_parallel_size)]
             dist.all_gather(gather, h, group=group)
             h = torch.cat(gather, dim=-1)
             
-        if output_attention:
-            attn_weights = []
+        all_attn_weights = [] if output_attention else None
 
         for i, layer in enumerate(self.layers):
             if output_attention:
-                h, attn_weights = layer(h, cache[i], attn_bias, group=group, output_attention=output_attention)
+                h_out, layer_attn_weights = layer(
+                    h, 
+                    cache[i], 
+                    attn_bias, 
+                    group=group, 
+                    output_attention=output_attention
+                )
+                h = h_out
+                all_attn_weights.append(layer_attn_weights)
             else:
                 h = layer(h, cache[i], attn_bias, group=group)
 
@@ -393,7 +402,7 @@ class Transformer(nn.Module):
             logits = torch.cat(gather, dim=-1)
 
         if output_attention:
-            return logits, attn_weights
+            return logits, all_attn_weights
         return logits.float()
 
     def forward(

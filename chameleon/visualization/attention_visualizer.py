@@ -1,10 +1,9 @@
 # attention_visualizer.py
 """
-Attention visualization tool for Chameleon model.
-This module provides functions to visualize attention patterns between different token types:
-- Image tokens
-- Text tokens
-- Output tokens
+Attention visualization tools for Chameleon model.
+
+This module provides functions to visualize attention patterns between 
+different token types: image tokens, text tokens, and output tokens.
 """
 
 import os
@@ -12,7 +11,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, LinearSegmentedColormap
 from typing import Dict, List, Tuple, Optional, Union
 from PIL import Image
 import json
@@ -431,3 +430,273 @@ def run_analysis_pipeline(
     
     print(f"Analysis complete. Results saved to {output_dir}")
     return results
+
+def visualize_attention_summary(
+    attention_data: List[Dict], 
+    output_dir: str, 
+    title: str = "Attention Summary"
+):
+    """
+    Visualize a summary of attention patterns across all layers.
+    
+    Args:
+        attention_data: List of layer attention data dictionaries
+        output_dir: Directory to save visualizations
+        title: Plot title
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Extract key patterns to track
+    patterns = ["text_to_image", "image_to_text", "output_to_text", "output_to_image"]
+    
+    # Prepare data for plotting
+    layer_indices = []
+    pattern_values = {pattern: [] for pattern in patterns}
+    
+    for layer_data in attention_data:
+        layer_idx = layer_data["layer"]
+        layer_indices.append(layer_idx)
+        
+        # Process top patterns
+        for pattern in pattern_values:
+            pattern_found = False
+            for p in layer_data["top_patterns"]:
+                pattern_key = f"{p['from']}_to_{p['to']}"
+                if pattern in pattern_key:
+                    pattern_values[pattern].append(p["value"])
+                    pattern_found = True
+                    break
+            
+            if not pattern_found:
+                pattern_values[pattern].append(0.0)
+    
+    # Create plot
+    plt.figure(figsize=(12, 8))
+    
+    colors = ['blue', 'red', 'green', 'purple']
+    for i, (pattern, values) in enumerate(pattern_values.items()):
+        if any(values):  # Only plot if we have data
+            plt.plot(layer_indices, values, marker='o', linestyle='-', 
+                     color=colors[i % len(colors)], label=pattern)
+    
+    plt.xlabel("Layer", fontsize=14)
+    plt.ylabel("Attention Strength", fontsize=14)
+    plt.title(title, fontsize=16)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    plt.savefig(os.path.join(output_dir, "attention_summary.png"), bbox_inches='tight')
+    plt.close()
+    
+    # Save data as JSON
+    with open(os.path.join(output_dir, "attention_summary.json"), "w") as f:
+        json.dump({
+            "layers": layer_indices,
+            "patterns": pattern_values
+        }, f, indent=2)
+
+def create_attention_heatmap(
+    attention_data: List[Dict],
+    output_dir: str,
+    sequence_length: int,
+    prompt_length: int,
+    token_type_map: Optional[List[str]] = None
+):
+    """
+    Create attention heatmaps for each layer.
+    
+    Args:
+        attention_data: List of layer attention data dictionaries
+        output_dir: Directory to save visualizations
+        sequence_length: Length of the full sequence
+        prompt_length: Length of the prompt
+        token_type_map: Optional mapping of token positions to token types
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # If no token type map is provided, create a simple one
+    if token_type_map is None:
+        token_type_map = ["prompt" if i < prompt_length else "output" 
+                         for i in range(sequence_length)]
+    
+    # Create heatmaps for each layer
+    for layer_data in attention_data:
+        layer_idx = layer_data["layer"]
+        
+        # Create a synthetic attention matrix for visualization
+        # This is a simplified representation based on the attention patterns
+        matrix_size = min(sequence_length, 100)  # Limit size for visualization
+        ratio = sequence_length / matrix_size if sequence_length > matrix_size else 1
+        
+        # Create a base low-attention matrix
+        attn_matrix = np.ones((matrix_size, matrix_size)) * 0.01
+        
+        # Fill in higher attention values based on patterns
+        for pattern in layer_data["top_patterns"]:
+            from_type = pattern["from"]
+            to_type = pattern["to"]
+            value = pattern["value"]
+            
+            # Find indices for this pattern
+            from_indices = [i // ratio for i, t in enumerate(token_type_map) if t == from_type and i // ratio < matrix_size]
+            to_indices = [i // ratio for i, t in enumerate(token_type_map) if t == to_type and i // ratio < matrix_size]
+            
+            # Set attention values
+            for i in from_indices:
+                for j in to_indices:
+                    attn_matrix[int(i), int(j)] = value
+        
+        # Create heatmap
+        plt.figure(figsize=(10, 8))
+        
+        # Use log normalization for better visualization
+        log_norm = LogNorm(vmin=0.001, vmax=max(0.1, attn_matrix.max()))
+        
+        # Create custom colormap
+        colors = plt.cm.viridis(np.linspace(0, 1, 256))
+        custom_cmap = LinearSegmentedColormap.from_list('custom_viridis', colors)
+        
+        # Plot heatmap
+        ax = sns.heatmap(attn_matrix, cmap=custom_cmap, norm=log_norm,
+                        cbar_kws={'label': 'Attention score'})
+        
+        # Add boundary lines for prompt/output
+        prompt_boundary = min(prompt_length / ratio, matrix_size)
+        if prompt_boundary < matrix_size:
+            plt.axhline(y=prompt_boundary, color='white', linestyle='--', alpha=0.7)
+            plt.axvline(x=prompt_boundary, color='white', linestyle='--', alpha=0.7)
+            
+            # Add labels
+            plt.text(prompt_boundary/2, -0.5, "Prompt", ha='center', fontsize=12)
+            plt.text(prompt_boundary + (matrix_size-prompt_boundary)/2, -0.5, "Output", ha='center', fontsize=12)
+        
+        plt.title(f"Layer {layer_idx+1} Attention", fontsize=16)
+        plt.xlabel("Key position", fontsize=14)
+        plt.ylabel("Query position", fontsize=14)
+        
+        plt.savefig(os.path.join(output_dir, f"layer_{layer_idx}_heatmap.png"), bbox_inches='tight')
+        plt.close()
+
+def visualize_token_type_attention(attention_data: List[Dict], output_dir: str):
+    """
+    Visualize attention between different token types.
+    
+    Args:
+        attention_data: List of layer attention data
+        output_dir: Directory to save visualizations
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Extract unique token types
+    token_types = set()
+    for layer_data in attention_data:
+        for pattern in layer_data["top_patterns"]:
+            token_types.add(pattern["from"])
+            token_types.add(pattern["to"])
+    
+    # Remove 'special' tokens for clarity
+    if 'special' in token_types:
+        token_types.remove('special')
+    
+    token_types = sorted(list(token_types))
+    
+    # Create matrices for each layer
+    num_layers = len(attention_data)
+    type_attention_matrices = []
+    
+    for layer_data in attention_data:
+        # Initialize matrix with zeros
+        matrix = np.zeros((len(token_types), len(token_types)))
+        
+        # Fill matrix with attention values
+        for pattern in layer_data["top_patterns"]:
+            from_type = pattern["from"]
+            to_type = pattern["to"]
+            
+            if from_type in token_types and to_type in token_types:
+                from_idx = token_types.index(from_type)
+                to_idx = token_types.index(to_type)
+                matrix[from_idx, to_idx] = pattern["value"]
+        
+        type_attention_matrices.append(matrix)
+    
+    # Create plots for each layer
+    for layer_idx, matrix in enumerate(type_attention_matrices):
+        plt.figure(figsize=(10, 8))
+        
+        # Plot heatmap
+        ax = sns.heatmap(matrix, cmap="YlOrRd", annot=True, fmt=".3f",
+                        xticklabels=token_types, yticklabels=token_types)
+        
+        plt.title(f"Layer {layer_idx+1} Token Type Attention", fontsize=16)
+        plt.xlabel("Attending To", fontsize=14)
+        plt.ylabel("Attending From", fontsize=14)
+        
+        plt.savefig(os.path.join(output_dir, f"layer_{layer_idx}_type_attention.png"), bbox_inches='tight')
+        plt.close()
+    
+    # Create average across all layers
+    if type_attention_matrices:
+        avg_matrix = np.mean(type_attention_matrices, axis=0)
+        
+        plt.figure(figsize=(10, 8))
+        ax = sns.heatmap(avg_matrix, cmap="YlOrRd", annot=True, fmt=".3f",
+                        xticklabels=token_types, yticklabels=token_types)
+        
+        plt.title("Average Token Type Attention Across All Layers", fontsize=16)
+        plt.xlabel("Attending To", fontsize=14)
+        plt.ylabel("Attending From", fontsize=14)
+        
+        plt.savefig(os.path.join(output_dir, "average_type_attention.png"), bbox_inches='tight')
+        plt.close()
+
+def process_attention_data(
+    attention_data: List[Dict],
+    full_sequence: List[int],
+    prompt_length: int,
+    output_dir: str = "attention_analysis"
+):
+    """
+    Process and visualize attention data from Chameleon model.
+    
+    Args:
+        attention_data: Attention data from generate_with_attention
+        full_sequence: Full token sequence (prompt + output)
+        prompt_length: Length of the prompt
+        output_dir: Directory to save visualizations
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"Processing attention data for {len(attention_data)} layers...")
+    print(f"Sequence length: {len(full_sequence)}, Prompt length: {prompt_length}")
+    
+    # Save raw attention data
+    with open(os.path.join(output_dir, "attention_data.json"), "w") as f:
+        # Convert to JSON-serializable format
+        serializable_data = json.dumps(attention_data, default=lambda o: o if not isinstance(o, np.ndarray) else o.tolist())
+        f.write(serializable_data)
+    
+    # Create overall summary visualization
+    visualize_attention_summary(attention_data, output_dir)
+    
+    # Create heatmap visualizations
+    create_attention_heatmap(attention_data, output_dir, len(full_sequence), prompt_length)
+    
+    # Create token type attention visualizations
+    visualize_token_type_attention(attention_data, output_dir)
+    
+    # Display key insights
+    print("\nKey attention insights:")
+    
+    important_patterns = ["text_to_image", "image_to_text", "output_to_text", "output_to_image"]
+    
+    for layer_idx, layer_data in enumerate(attention_data):
+        print(f"\nLayer {layer_idx+1}:")
+        
+        # Show top patterns
+        print("  Top attention patterns:")
+        for pattern in layer_data["top_patterns"][:3]:
+            print(f"    {pattern['from']} → {pattern['to']}: {pattern['value']:.6f}")
+    
+    print(f"\nVisualization results saved to {output_dir}")
+    return output_dir
