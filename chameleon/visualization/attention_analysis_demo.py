@@ -35,7 +35,7 @@ def main():
     
     # Initialize model
     print("Initializing model...")
-    options = Options(max_gen_len=100)
+    options = Options(max_gen_len=500)
     model = ChameleonInferenceModel(
         model=args.model_path,
         tokenizer_path=args.tokenizer_path,
@@ -67,25 +67,28 @@ def main():
     print("Running model inference and collecting attention...")
     output_ids, attention_data = model.generate_with_attention(prompt_ui=inputs)
     
+    print(attention_data)
+    print(output_ids)
+    print(model.decode_text(output_ids)[0])
     
-    # Get input sequence for reference
-    input_sequence = model.token_manager.tokens_from_ui(inputs)
-    prompt_length = len(input_sequence)
+    # # Get input sequence for reference
+    # input_sequence = model.token_manager.tokens_from_ui(inputs)
+    # prompt_length = len(input_sequence)
     
-    # Get full sequence (input + output)
-    full_sequence = input_sequence + output_ids.flatten().tolist()[prompt_length:]
+    # # Get full sequence (input + output)
+    # full_sequence = input_sequence + output_ids.flatten().tolist()[prompt_length:]
     
-    # Decode output for display
-    output_text = model.token_manager.decode_text([output_ids.flatten().tolist()[prompt_length:]])[0]
-    print(f"\nGenerated output:\n{output_text}\n")
+    # # Decode output for display
+    # output_text = model.token_manager.decode_text([output_ids.flatten().tolist()[prompt_length:]])[0]
+    # print(f"\nGenerated output:\n{output_text}\n")
     
-    # Process and visualize attention data
-    process_attention_data(
-        attention_data=attention_data,
-        full_sequence=full_sequence,
-        prompt_length=prompt_length,
-        output_dir=args.output_dir
-    )
+    # # Process and visualize attention data
+    # process_attention_data(
+    #     attention_data=attention_data,
+    #     full_sequence=full_sequence,
+    #     prompt_length=prompt_length,
+    #     output_dir=args.output_dir
+    # )
 
 if __name__ == "__main__":
     main()

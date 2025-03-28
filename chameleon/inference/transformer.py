@@ -15,7 +15,6 @@ from xformers.ops.fmha.attn_bias import (
     BlockDiagonalCausalWithOffsetPaddedKeysMask as AttnBias,
 )
 
-attention_weights = []
 
 @dataclass
 class ModelArgs:
@@ -34,6 +33,8 @@ class ModelArgs:
 
 
 LayerCache = tuple[torch.Tensor, torch.Tensor]
+attention_weights = []
+all_attn_weights_tensor = torch.LongTensor()
 
 
 class Attention(nn.Module):
@@ -153,28 +154,28 @@ class Attention(nn.Module):
         
         # Support the output of attention weights
         attn_weights = None
-        if output_attention:
-            # Calculate attention scores
-            q_scaled = xq / math.sqrt(self.head_dim) 
-            B, N_q, Hkv, hpg, D = q_scaled.shape #hpg = heads_per_group
-            N_k = cache_k.shape[1]
-            q_for_attn = q_scaled.permute(0, 2, 1, 3, 4).contiguous().view(B * Hkv, hpg * N_q, D)
-            k_for_attn = cache_k.view(B * Hkv, N_k, D)
-            scores = torch.bmm(q_for_attn, k_for_attn.transpose(-1, -2)) 
-            scores = scores.view(B, Hkv, hpg, N_q, N_k)
-            if attn_bias is not None:
-                # Convert attn_bias to the appropriate shape, TODO: check the shape
-                bias_expanded = attn_bias.materialize((B * Hkv * hpg, N_q, N_k))
-                bias_expanded = bias_expanded.view(B, Hkv, hpg, N_q, N_k)
-                scores = scores + bias_expanded.to(scores.device)
-            attn_weights = torch.softmax(scores, dim=-1)
-            attn_weights = attn_weights.view(B, Hkv * hpg, N_q, N_k)
-            attn_weights = attn_weights.view(
-                    xq.shape[0],  # B
-                    self.n_local_heads,  # Hq = Hkv*hpg
-                    N_q, 
-                    N_k
-            )
+        # if output_attention:
+        #     # Calculate attention scores
+        #     q_scaled = xq / math.sqrt(self.head_dim) 
+        #     B, N_q, Hkv, hpg, D = q_scaled.shape #hpg = heads_per_group
+        #     N_k = cache_k.shape[1]
+        #     q_for_attn = q_scaled.permute(0, 2, 1, 3, 4).contiguous().view(B * Hkv, hpg * N_q, D)
+        #     k_for_attn = cache_k.view(B * Hkv, N_k, D)
+        #     scores = torch.bmm(q_for_attn, k_for_attn.transpose(-1, -2)) 
+        #     scores = scores.view(B, Hkv, hpg, N_q, N_k)
+        #     # if attn_bias is not None:
+        #     #     # Convert attn_bias to the appropriate shape, TODO: check the shape
+        #     #     bias_expanded = attn_bias.materialize((B * Hkv * hpg, N_q, N_k))
+        #     #     bias_expanded = bias_expanded.view(B, Hkv, hpg, N_q, N_k)
+        #     #     scores = scores + bias_expanded
+        #     attn_weights = torch.softmax(scores, dim=-1)
+        #     attn_weights = attn_weights.view(B, Hkv * hpg, N_q, N_k)
+        #     attn_weights = attn_weights.view(
+        #             xq.shape[0],  # B
+        #             self.n_local_heads,  # Hq = Hkv*hpg
+        #             N_q, 
+        #             N_k
+        #     )
             
         # rope_padded() updated the caches, so we
         # call attention directly
@@ -381,28 +382,31 @@ class Transformer(nn.Module):
             h = torch.cat(gather, dim=-1)
 
         global attention_weights
-        attention_weights.clear()
+        # attention_weights.clear()
 
         for i, layer in enumerate(self.layers):
             if output_attention:
-                h_out, layer_attn_weights = layer(
+                h, layer_attn_weights = layer(
                     h, 
                     cache[i], 
                     attn_bias, 
                     group=group, 
                     output_attention=output_attention
                 )
-                h = h_out
+                # print(f"layer {i} layer_attn_weights.shape: {layer_attn_weights.shape}")
                 attention_weights.append(layer_attn_weights)
+                # print(f"layer {i} attention_weights: {layer_attn_weights}")
             else:
                 h = layer(h, cache[i], attn_bias, group=group)
+        
+        # if output_attention:
+        #     all_attn_weights_tensor = torch.stack(attention_weights, dim=0)
 
         logits = self.output(self.norm(h))
         if self.model_parallel_size > 1:
             gather = [torch.empty_like(logits) for _ in range(self.model_parallel_size)]
             dist.all_gather(gather, logits, group=group)
             logits = torch.cat(gather, dim=-1)
-
         return logits.float()
 
     def forward(
@@ -418,6 +422,7 @@ class Transformer(nn.Module):
             q_seqlen=token_lengths.tolist(),
             kv_seqlen=(start_pos + token_lengths).tolist(),
             kv_padding=kv_padding,
+            device=token_values.device,
         )
         return self.forward_with_attn_bias(token_values, attn_bias, cache, group=group)
 

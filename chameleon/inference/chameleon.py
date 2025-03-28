@@ -47,7 +47,7 @@ from chameleon.inference.token_selector import (
     MultinomialTokenSelector,
     ReplicatedInputTokenSelector,
 )
-from chameleon.inference.transformer import Transformer, make_cache, attention_weights
+from chameleon.inference.transformer import Transformer, make_cache, attention_weights, all_attn_weights_tensor
 from chameleon.inference.utils import DynamicGenerator, advance, random_unused_port
 from chameleon.inference.vocab import VocabInfo, VocabTranslation
 from xformers.ops.fmha.attn_bias import BlockDiagonalCausalWithOffsetPaddedKeysMask as AttnBias
@@ -683,8 +683,8 @@ class ChameleonInferenceModel:
         batch_prompt_ui: list[list[dict]] | None = None,
         options: Options | None = None,
     ) -> tuple[torch.LongTensor, list[torch.Tensor]]:
-        global attention_weights
-        attention_weights.clear()
+        # global attention_weights
+        # attention_weights.clear()
         
         output_tokens = self.generate(
             input_ids=input_ids,
@@ -695,5 +695,6 @@ class ChameleonInferenceModel:
             batch_prompt_ui=batch_prompt_ui,
             options=options,
         )
-        
+        global attention_weights
+        print(f"attention_weights: {attention_weights}")
         return output_tokens, attention_weights

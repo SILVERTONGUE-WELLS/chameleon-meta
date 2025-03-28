@@ -17,7 +17,7 @@ def main():
     tokens = model.generate(
         prompt_ui=[
             {"type": "image", "value": "file:/workspace/chameleon-meta/data/images/geode-de-celestite-madagascar.jpg"},
-            {"type": "text", "value": "What do you see?"},
+            {"type": "text", "value": "what do you see in this picture?"},
             {"type": "sentinel", "value": "<END-OF-TURN>"},
         ]
     )

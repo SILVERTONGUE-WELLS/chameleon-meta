@@ -1,0 +1,9 @@
+{
+  "layers": [],
+  "patterns": {
+    "text_to_image": [],
+    "image_to_text": [],
+    "output_to_text": [],
+    "output_to_image": []
+  }
+}
