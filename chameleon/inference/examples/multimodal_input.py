@@ -18,22 +18,35 @@ def main():
                       vqgan_ckpt_path="/workspace/chameleon/data/tokenizer/vqgan.ckpt"
                       )
     print(f"begin_image: {tk.vocab.begin_image}")
-    options = Options(max_gen_len=512)
-    model = ChameleonInferenceModel(
-        "/workspace/chameleon/data/models/7b/",
-        "/workspace/chameleon/data/tokenizer/text_tokenizer.json",
-        "/workspace/chameleon/data/tokenizer/vqgan.yaml",
-        "/workspace/chameleon/data/tokenizer/vqgan.ckpt",
-        options=options
-    )
+    # options = Options(max_gen_len=512)
+    # model = ChameleonInferenceModel(
+    #     "/workspace/chameleon/data/models/7b/",
+    #     "/workspace/chameleon/data/tokenizer/text_tokenizer.json",
+    #     "/workspace/chameleon/data/tokenizer/vqgan.yaml",
+    #     "/workspace/chameleon/data/tokenizer/vqgan.ckpt",
+    #     options=options
+    # )
     prompt_ui=[
             {"type": "image", "value": "file:/workspace/chameleon/data/images/image.png"},
             {"type": "text", "value": "Carefully examine the provided image and describe in detail the three rocks being held in a person’s hand. Consider their coloration, texture, shape, size, and any noticeable distinguishing features. Based on your observation, what type of rocks might these be, and could you infer anything about their geological origin or the environment in which they were formed? Additionally, explain your reasoning clearly, mentioning how each visual cue in the image contributed to your inference."},
             {"type": "sentinel", "value": "<END-OF-TURN>"},
         ]
-    tokens = model.generate(prompt_ui=prompt_ui)
-    print(model.decode_text(tokens)[0])
-    output_tokens = [item for tensor in tokens for item in tensor.tolist()]
+    # tokens = model.generate(prompt_ui=prompt_ui)
+    # print(model.decode_text(tokens)[0])
+    # output_tokens = [item for tensor in tokens for item in tensor.tolist()]
+    output_tokens = tk.tokenize_text("""
+                                     The image depicts three rocks held in a person's hand, with the rocks facing away from the viewer. The rocks are pale grayish-white in color, with a rough, irregular texture. They have a lumpy, uneven shape, with some parts appearing more rounded than others. The largest rock measures approximately 1.5 inches in length and 1 inch in width, while the two smaller rocks are slightly smaller. The rocks have no noticeable distinguishing features, such as cracks, crevices, or patterns.
+
+Based on the image, it is difficult to determine the exact type of rocks without further information or context. However, based on their coloration, texture, and shape, they could be sedimentary rocks, such as limestone or dolostone. These rocks are formed when sediments, such as sand, mud, or shells, accumulate over time and are compressed and cemented together by minerals.
+
+The rocks' pale grayish-white color suggests that they are composed of minerals that are relatively light in color, such as calcium carbonate (limestone) or magnesium carbonate (dolomite). The rough, irregular texture also suggests that they are sedimentary rocks, as sedimentary rocks often have a rough, undulating surface.
+
+The lumpy, uneven shape of the rocks could be due to the way they were formed. Sedimentary rocks can form when sediments accumulate and are compressed, causing the particles to become packed together in a more uniform way. Over time, the sediments can be cemented together by minerals, such as calcium carbonate or silica, which can help to create a more solid, lumpy structure.
+
+In terms of their geological origin, the rocks could have formed in a variety of environments, such as a beach, a river, or an ocean. The presence of calcium carbonate or magnesium carbonate in the rocks suggests that they could have formed in an environment where these minerals were present, such as a shallow marine environment or a freshwater environment with high levels of calcium or magnesium.
+
+Overall, the rocks in the image appear to be sedimentary rocks, and their pale grayish-white color and rough texture suggest that they could have formed in a variety of environments. The lumpy, uneven shape of the rocks could be due to the way they were formed, and the presence of calcium carbonate or magnesium carbonate in the rocks suggests that they could have formed in an environment where these minerals were present.
+                                     """)
     tokens = tk.tokens_from_ui(prompt_ui) + output_tokens
     attention_layer0_31 = torch.load("attention_layer0_31.pt")
     attention_output_token = torch.load("attention_output_token.pt")

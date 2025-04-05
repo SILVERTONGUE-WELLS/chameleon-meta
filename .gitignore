@@ -5,3 +5,6 @@ __pycache__/
 
 /outputs
 /chameleon.egg-info
+
+chameleon/inference/examples/attention_layer0_31.pt
+chameleon/inference/examples/attention_output_token.pt

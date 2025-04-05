@@ -17,17 +17,6 @@ from PIL import Image
 import json
 
 def identify_token_boundaries(tokens: List[int], vocab, prompt_length: int) -> Dict[str, Dict[str, int]]:
-    """
-    Identify the boundaries of different token types in the sequence.
-    
-    Args:
-        tokens: List of token IDs
-        vocab: Vocabulary information object
-        prompt_length: Length of the prompt (to distinguish between input and output)
-        
-    Returns:
-        Dictionary with boundary information for different token types
-    """
     boundaries = {
         "text": {"start": None, "end": None},
         "image": {"start": None, "end": None},
@@ -62,17 +51,6 @@ def identify_token_boundaries(tokens: List[int], vocab, prompt_length: int) -> D
     return boundaries
 
 def map_token_types(tokens: List[int], vocab, prompt_length: int) -> List[str]:
-    """
-    Map each token to its type (image, text, output).
-    
-    Args:
-        tokens: List of token IDs
-        vocab: Vocabulary information object
-        prompt_length: Length of the prompt
-        
-    Returns:
-        List of token type labels for each token
-    """
     token_types = []
     in_image = False
     
@@ -102,20 +80,6 @@ def visualize_attention(
     pool_size: int = 1,
     title: Optional[str] = None
 ) -> Tuple[np.ndarray, Dict]:
-    """
-    Visualize attention patterns and highlight different token types.
-    
-    Args:
-        layer_idx: Index of the transformer layer
-        attention_weights: Attention weight tensor [num_heads, seq_len, seq_len]
-        token_types: List of token type labels
-        output_dir: Directory to save visualization
-        pool_size: Size for pooling operation to reduce dimensions
-        title: Optional title for the plot
-        
-    Returns:
-        Tuple of averaged attention array and analysis metrics
-    """
     # Average across attention heads
     avg_attention = torch.mean(attention_weights, dim=0).float().cpu().numpy()
     
@@ -194,16 +158,6 @@ def visualize_attention(
     return avg_attention, {"metrics": metrics, "top_pairs": top_pairs}
 
 def compute_attention_metrics(attention_matrix: np.ndarray, token_types: List[str]) -> Dict:
-    """
-    Compute attention metrics between different token types.
-    
-    Args:
-        attention_matrix: 2D attention matrix
-        token_types: List of token type labels
-        
-    Returns:
-        Dictionary with attention metrics
-    """
     # Group indices by token type
     type_indices = {}
     for t in set(token_types):
@@ -231,18 +185,6 @@ def compute_attention_metrics(attention_matrix: np.ndarray, token_types: List[st
     return metrics
 
 def find_top_attention_pairs(attention_matrix: np.ndarray, token_types: List[str], k: int = 10) -> List[Dict]:
-    """
-    Find the top-k attention pairs.
-    
-    Args:
-        attention_matrix: 2D attention matrix
-        token_types: List of token type labels
-        k: Number of top pairs to return
-        
-    Returns:
-        List of dictionaries with top attention pairs info
-    """
-    # Flatten the matrix and get top-k indices
     flat_indices = np.argsort(attention_matrix.flatten())[-k:]
     
     # Convert flat indices to 2D indices
@@ -270,20 +212,6 @@ def analyze_all_layers(
     output_dir: str = "attention_analysis",
     pool_size: int = 1
 ) -> Dict:
-    """
-    Analyze and visualize attention patterns across all layers.
-    
-    Args:
-        all_attention_weights: List of attention tensors for each layer
-        tokens: List of token IDs
-        vocab: Vocabulary information object
-        prompt_length: Length of the prompt
-        output_dir: Directory to save results
-        pool_size: Pooling size for visualization
-        
-    Returns:
-        Dictionary with analysis results for all layers
-    """
     os.makedirs(output_dir, exist_ok=True)
     
     # Map tokens to types
@@ -317,14 +245,6 @@ def analyze_all_layers(
     return results
 
 def plot_cross_attention_trends(results: Dict, output_dir: str):
-    """
-    Plot trends of cross-attention metrics across layers.
-    
-    Args:
-        results: Results dictionary from analyze_all_layers
-        output_dir: Directory to save plots
-    """
-    # Extract key cross-attention patterns to track
     patterns = [
         "text_to_image", 
         "image_to_text",
@@ -377,14 +297,6 @@ def visualize_attention_summary(
     output_dir: str, 
     title: str = "Attention Summary"
 ):
-    """
-    Visualize a summary of attention patterns across all layers.
-    
-    Args:
-        attention_data: List of layer attention data dictionaries
-        output_dir: Directory to save visualizations
-        title: Plot title
-    """
     os.makedirs(output_dir, exist_ok=True)
     
     # Extract key patterns to track
@@ -443,16 +355,6 @@ def create_attention_heatmap(
     prompt_length: int,
     token_type_map: Optional[List[str]] = None
 ):
-    """
-    Create attention heatmaps for each layer.
-    
-    Args:
-        attention_data: List of layer attention data dictionaries
-        output_dir: Directory to save visualizations
-        sequence_length: Length of the full sequence
-        prompt_length: Length of the prompt
-        token_type_map: Optional mapping of token positions to token types
-    """
     os.makedirs(output_dir, exist_ok=True)
     
     # If no token type map is provided, create a simple one
@@ -519,13 +421,6 @@ def create_attention_heatmap(
         plt.close()
 
 def visualize_token_type_attention(attention_data: List[Dict], output_dir: str):
-    """
-    Visualize attention between different token types.
-    
-    Args:
-        attention_data: List of layer attention data
-        output_dir: Directory to save visualizations
-    """
     os.makedirs(output_dir, exist_ok=True)
     
     # Extract unique token types
@@ -597,15 +492,6 @@ def process_attention_data(
     prompt_length: int,
     output_dir: str = "attention_analysis"
 ):
-    """
-    Process and visualize attention data from Chameleon model.
-    
-    Args:
-        attention_data: Attention data from generate_with_attention
-        full_sequence: Full token sequence (prompt + output)
-        prompt_length: Length of the prompt
-        output_dir: Directory to save visualizations
-    """
     os.makedirs(output_dir, exist_ok=True)
     
     print(f"Processing attention data for {len(attention_data)} layers...")
@@ -651,21 +537,7 @@ def visualize_combined_attention(
     output_dir: str = "combined_attention_analysis",
     pool_size: int = 1
 ) -> Dict:
-    """
-    Visualize and analyze attention patterns combining forward pass and autoregressive generation.
-    
-    Args:
-        layer_attention_weights: Attention weights from the first forward pass [n_layers, batch, n_heads, seq_len, seq_len]
-        output_attention_weights: Attention weights from autoregressive generation [n_outputs*n_layers, batch, n_heads, 1, seq_len]
-        tokens: List of token IDs
-        vocab: Vocabulary information object
-        prompt_length: Length of the prompt
-        output_dir: Directory to save visualizations
-        pool_size: Size for pooling operation to reduce dimensions
-        
-    Returns:
-        Dictionary with analysis results
-    """
+
     os.makedirs(output_dir, exist_ok=True)
     
     # Map tokens to types
@@ -884,21 +756,6 @@ def run_combined_analysis(
     output_dir: str = "combined_attention_analysis",
     pool_size: int = 20  # Match example.py default
 ):
-    """
-    Run complete combined attention analysis pipeline.
-    
-    Args:
-        model_output_attention: Attention weights from the first forward pass
-        autoregressive_attention: Attention weights from autoregressive generation
-        tokens: Token IDs
-        vocab: Vocabulary object
-        prompt_length: Length of the prompt
-        output_dir: Output directory
-        pool_size: Pooling size for visualization
-    
-    Returns:
-        Analysis results
-    """
     print(f"Starting combined attention analysis...")
     print(f"Model attention shape: {model_output_attention.shape}")
     print(f"Autoregressive attention shape: {autoregressive_attention.shape}")
@@ -919,46 +776,3 @@ def run_combined_analysis(
     print(f"Analysis complete. Results saved to {output_dir}")
     return results
 
-def main():
-    """
-    Main function to run from command line
-    """
-    import argparse
-    parser = argparse.ArgumentParser(description="Attention visualization for Chameleon model")
-    parser.add_argument("--model-attention", type=str, required=True, help="Path to the model attention weights file (first forward pass)")
-    parser.add_argument("--output-attention", type=str, required=True, help="Path to the output attention weights file (autoregressive generation)")
-    parser.add_argument("--tokens", type=str, required=True, help="Path to tokens file")
-    parser.add_argument("--prompt-length", type=int, required=True, help="Length of the prompt")
-    parser.add_argument("--output-dir", type=str, default="attention_analysis", help="Output directory")
-    parser.add_argument("--pool-size", type=int, default=20, help="Pooling size for visualization")
-    
-    args = parser.parse_args()
-    
-    # Load attention weights
-    model_attention = torch.load(args.model_attention)
-    output_attention = torch.load(args.output_attention)
-    
-    # Load tokens
-    tokens = torch.load(args.tokens)
-    if isinstance(tokens, torch.Tensor):
-        tokens = tokens.tolist()
-    
-    # Import token manager for vocab
-    from chameleon.inference.chameleon import TokenManager
-    tk = TokenManager(tokenizer_path="/workspace/chameleon/data/tokenizer/text_tokenizer.json", 
-                      vqgan_cfg_path="/workspace/chameleon/data/tokenizer/vqgan.yaml", 
-                      vqgan_ckpt_path="/workspace/chameleon/data/tokenizer/vqgan.ckpt"
-                      )
-    # Run analysis
-    run_combined_analysis(
-        model_output_attention=model_attention,
-        autoregressive_attention=output_attention,
-        tokens=tokens,
-        vocab=tk.vocab,
-        prompt_length=args.prompt_length,
-        output_dir=args.output_dir,
-        pool_size=args.pool_size
-    )
-
-if __name__ == "__main__":
-    main()
