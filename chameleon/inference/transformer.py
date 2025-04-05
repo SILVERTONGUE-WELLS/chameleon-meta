@@ -5,7 +5,7 @@
 
 from dataclasses import dataclass
 
-import torch
+import torch, math
 from torch import distributed as dist
 from torch import nn
 from torch.nn import functional as F
@@ -13,6 +13,18 @@ from xformers.ops import RMSNorm, fmha, rope_padded
 from xformers.ops.fmha.attn_bias import (
     BlockDiagonalCausalWithOffsetPaddedKeysMask as AttnBias,
 )
+import chameleon.inference.global_vars as glv
+
+
+
+
+attention_layer0_31 = torch.Tensor()
+attention_output_token = torch.Tensor()
+attention_weights = []
+attention_cnt = 0
+cnt = 0
+
+
 
 
 @dataclass
@@ -101,6 +113,14 @@ class Attention(nn.Module):
         attn_bias: AttnBias,
         group: dist.ProcessGroup | None = None,
     ) -> torch.Tensor:
+        global attention_cnt
+        global attention_weights
+        global attention_layer0_31
+        global cnt
+        attention_cnt += 1
+        if attention_cnt % 32 == 0:
+            cnt += 1
+            print(cnt)
         # x.shape is (sum(seq_lens), dim)
         #
         # Since we support heterogenous sequence
@@ -147,7 +167,37 @@ class Attention(nn.Module):
         xq = xq.reshape(
             [*xq.shape[:2], self.n_local_kv_heads, heads_per_group, xq.shape[-1]]
         )
-
+        
+        # Support the output of attention weights
+        attn_weights = None
+        # Calculate attention scores
+        q_scaled = xq / math.sqrt(self.head_dim) 
+        B, N_q, Hkv, hpg, D = q_scaled.shape #hpg = heads_per_group
+        N_k = cache_k.shape[1]
+        q_for_attn = q_scaled.permute(0, 2, 1, 3, 4).contiguous().view(B * Hkv, hpg * N_q, D)
+        k_for_attn = cache_k.view(B * Hkv, N_k, D)
+        scores = torch.bmm(q_for_attn, k_for_attn.transpose(-1, -2)) 
+        scores = scores.view(B, Hkv, hpg, N_q, N_k)
+        if attn_bias is not None:
+            # Convert attn_bias to the appropriate shape, TODO: check the shape
+            bias_expanded = attn_bias.materialize((B * Hkv * hpg, N_q, N_k))
+            bias_expanded = bias_expanded.view(B, Hkv, hpg, N_q, N_k)
+            scores = scores + bias_expanded.to(scores.device)
+         
+        attn_weights = torch.softmax(scores, dim=-1)
+        attn_weights = attn_weights.view(B, Hkv * hpg, N_q, N_k)
+        attn_weights = attn_weights.view(
+            xq.shape[0],  # B
+            self.n_local_heads,  # Hq = Hkv*hpg
+            N_q, 
+            N_k
+        )
+        attention_weights.append(attn_weights)
+        if attention_cnt == 32:
+            attention_layer0_31 = torch.stack(attention_weights, dim = 0)
+            glv.set_value("attention_layer0_31", attention_layer0_31)
+            torch.save(attention_layer0_31, "attention_layer0_31.pt")
+            attention_weights = []
         # rope_padded() updated the caches, so we
         # call attention directly
         output = fmha.memory_efficient_attention_forward(
@@ -155,6 +205,7 @@ class Attention(nn.Module):
         )
 
         output = self.wo(output.reshape(output_shape))
+        # print((len(attention_weights), attn_weights.shape, output.shape))
         if self.model_parallel_size > 1:
             dist.all_reduce(output, group=group)
 
@@ -320,6 +371,8 @@ class Transformer(nn.Module):
         cache: list[LayerCache],
         group: dist.ProcessGroup | None = None,
     ) -> torch.Tensor:
+        global attention_output_token
+        global attention_weights
         h = self.tok_embeddings(token_values)
         if self.model_parallel_size > 1:
             gather = [torch.empty_like(h) for _ in range(self.model_parallel_size)]
@@ -328,7 +381,10 @@ class Transformer(nn.Module):
 
         for i, layer in enumerate(self.layers):
             h = layer(h, cache[i], attn_bias, group=group)
-
+        if cnt > 1:
+            print(len(attention_weights))
+            attention_output_token = torch.stack(attention_weights,dim = 0)
+            torch.save(attention_output_token, "attention_output_token.pt")
         logits = self.output(self.norm(h))
         if self.model_parallel_size > 1:
             gather = [torch.empty_like(logits) for _ in range(self.model_parallel_size)]

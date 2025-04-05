@@ -660,7 +660,7 @@ class ChameleonInferenceModel:
     def step(self, *args, **kwargs) -> ChameleonGenerator.Token:
         return next(self.stream(*args, **kwargs))
 
-    def generate(self, *args, **kwargs) -> torch.LongTensor:
+    def generate(self, *args, **kwargs) -> list[torch.LongTensor]:
         tokens = [t.id for t in self.stream(*args, **kwargs)]
         if not tokens:
             return torch.LongTensor()

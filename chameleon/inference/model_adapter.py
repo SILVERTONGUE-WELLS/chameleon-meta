@@ -59,7 +59,8 @@ class ChameleonModelAdapter(ModelAdapter):
 
         self._local_inputs = torch.zeros([batch_size], dtype=int, device="cuda")
 
-        self._forward = cudagraph_wrap(self._model.forward_with_attn_bias)
+        # self._forward = cudagraph_wrap(self._model.forward_with_attn_bias)
+        self._forward = self._model.forward_with_attn_bias
 
         self._first_pass = True
 
