@@ -543,17 +543,20 @@ def visualize_combined_attention(
     # Map tokens to types
     token_types = map_token_types(tokens, vocab, prompt_length)
     
-    # Identify token boundaries
-    boundaries = identify_token_boundaries(tokens, vocab, prompt_length)
-    
-    # Determine number of layers
+    # 获取层数和输出token数量
     n_layers = layer_attention_weights.shape[0]
-    
-    # Number of output tokens
     n_output_tokens = output_attention_weights.shape[0] // n_layers
     
+    # 计算完整的attention形状
+    input_seq_len = layer_attention_weights.shape[3]
+    full_seq_len = input_seq_len + n_output_tokens
+    ctx_size = layer_attention_weights.shape[4]
+    
     print(f"Processing {n_layers} layers with {n_output_tokens} output tokens")
-    print(f"Token boundaries: {boundaries}")
+    print(f"Input shape: {input_seq_len}, Full sequence length: {full_seq_len}, Context size: {ctx_size}")
+    
+    # Identify token boundaries
+    boundaries = identify_token_boundaries(tokens, vocab, prompt_length)
     
     # Prepare results dictionary
     results = {}
@@ -563,15 +566,29 @@ def visualize_combined_attention(
         print(f"Processing layer {layer_idx+1}/{n_layers}...")
         
         # Extract layer attention from forward pass
-        layer_attn = layer_attention_weights[layer_idx, 0]  # [n_heads, seq_len, seqc_len]
+        layer_attn = layer_attention_weights[layer_idx, 0]  # [n_heads, seq_len, seq_len]
         
         # Extract output attention for this layer
         output_attn_indices = [layer_idx + i * n_layers for i in range(n_output_tokens)]
         output_attn = output_attention_weights[output_attn_indices, 0]  # [n_output_tokens, n_heads, 1, seq_len]
         
         # Average the attention across heads
-        avg_layer_attn = torch.mean(layer_attn, dim=0).float()  # [seq_len, seqc_len]
+        avg_layer_attn = torch.mean(layer_attn, dim=0).float()  # [seq_len, seq_len]
         avg_output_attn = torch.mean(output_attn, dim=1).squeeze(1).float()  # [n_output_tokens, seq_len]
+        
+        # 创建完整的注意力矩阵
+        full_attn = torch.zeros((full_seq_len, ctx_size), device=avg_layer_attn.device, dtype=avg_layer_attn.dtype)
+        
+        # 填充自注意力部分
+        full_attn[:input_seq_len, :ctx_size] = avg_layer_attn
+        
+        # 填充输出token的注意力部分（只保留指向前面token的注意力）
+        for i, output_row in enumerate(avg_output_attn):
+            output_pos = input_seq_len + i
+            full_attn[output_pos, :ctx_size] = output_row
+        
+        # 完整注意力矩阵存储到GPU
+        avg_layer_attn = full_attn
         
         # Apply pooling if needed
         if pool_size > 1:
@@ -736,6 +753,15 @@ def visualize_combined_attention(
         results[f"layer_{layer_idx}"] = {
             "metrics": metrics
         }
+        
+        create_combined_attention_plot(
+            layer_idx=layer_idx,
+            avg_layer_attn=avg_layer_attn,
+            avg_output_attn=avg_output_attn,
+            boundaries=boundaries,
+            pool_size=pool_size,
+            output_dir=output_dir
+        )
     
     # Create cross-attention trend plots
     plot_cross_attention_trends(results, output_dir)
@@ -746,6 +772,80 @@ def visualize_combined_attention(
         json.dump(results, f, indent=2)
     
     return results
+
+def create_combined_attention_plot(
+    layer_idx: int,
+    avg_layer_attn: torch.Tensor,  # 完整的自注意力矩阵，已合并输出token的注意力
+    avg_output_attn: torch.Tensor,  # output-attention [n_output_tokens, seq_len]，仅用于参考
+    boundaries: Dict[str, Dict[str, int]],
+    pool_size: int,
+    output_dir: str
+):
+    plt.figure(figsize=(14, 12), dpi=300)
+    
+    prompt_length = boundaries['prompt']['end']
+    if pool_size > 1:
+        prompt_length = prompt_length // pool_size
+    
+    # 直接使用已合并的注意力矩阵
+    combined_attn = avg_layer_attn.cpu().numpy()
+    
+    # 设置对数归一化以增强可视化效果
+    vmin = max(0.0001, np.min(combined_attn[combined_attn > 0]))
+    vmax = np.max(combined_attn)
+    log_norm = LogNorm(vmin=vmin, vmax=vmax)
+    
+    ax = sns.heatmap(combined_attn, cmap="viridis", norm=log_norm,
+                 cbar_kws={'label': 'Attention score'})
+    
+    colors = {'text': 'blue', 'image': 'red', 'output': 'green', 'image_boundary': 'purple'}
+    
+    for token_type, boundary in boundaries.items():
+        if token_type not in ['prompt', 'special'] and boundary['start'] is not None and boundary['end'] is not None:
+            start, end = boundary['start'], boundary['end']
+            if pool_size > 1:
+                start = start // pool_size
+                end = end // pool_size
+            
+            color = colors.get(token_type, 'gray')
+            plt.axhline(y=start, color=color, linestyle='-', linewidth=2, alpha=0.7)
+            plt.axhline(y=end, color=color, linestyle='-', linewidth=2, alpha=0.7)
+            plt.axvline(x=start, color=color, linestyle='-', linewidth=2, alpha=0.7)
+            plt.axvline(x=end, color=color, linestyle='-', linewidth=2, alpha=0.7)
+            
+            plt.text(start + (end-start)//2, start - 0.5, token_type, 
+                    fontsize=12, color='white', weight='bold',
+                    bbox=dict(facecolor=color, alpha=0.8))
+    
+    # 添加输入/输出分界线
+    input_seq_len = boundaries['prompt']['end']
+    if pool_size > 1:
+        input_seq_len = input_seq_len // pool_size
+        
+    plt.axhline(y=input_seq_len, color='white', linestyle='--', linewidth=2, alpha=0.8)
+    plt.axvline(x=input_seq_len, color='white', linestyle='--', linewidth=2, alpha=0.8)
+    
+    # 修改标题和标签
+    plt.title(f"Layer {layer_idx+1} Combined Attention", fontsize=16)
+    plt.xlabel("Key position", fontsize=14)
+    plt.ylabel("Query position", fontsize=14)
+    
+    # 添加输出→输入区域标签
+    plt.text(input_seq_len // 2, input_seq_len + (combined_attn.shape[0] - input_seq_len) // 2, 
+             "Output → Input\nAttention", 
+             fontsize=12, color='white', ha='center', va='center', weight='bold',
+             bbox=dict(facecolor='green', alpha=0.8))
+    
+    # 添加"已生成输出"区域标签
+    plt.text(input_seq_len + (combined_attn.shape[1] - input_seq_len) // 2, input_seq_len // 2,
+             "Generated\nOutput", 
+             fontsize=12, color='white', ha='center', va='center', weight='bold',
+             bbox=dict(facecolor='purple', alpha=0.8))
+    
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"layer_{layer_idx}_combined_attention.png")
+    plt.savefig(output_path, bbox_inches='tight')
+    plt.close()
 
 def run_combined_analysis(
     model_output_attention: torch.Tensor,  # From first forward pass
